@@ -1,0 +1,9 @@
+FROM python:slim
+
+COPY ./scripts/requirements.txt /
+WORKDIR /bot
+
+RUN pip install --upgrade pip
+RUN pip install -r /requirements.txt
+
+CMD python -u discord_bot_notify.py

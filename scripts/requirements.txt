@@ -1,0 +1,6 @@
+discord.py
+imgurpython
+Pillow
+pymongo
+requests
+tweepy

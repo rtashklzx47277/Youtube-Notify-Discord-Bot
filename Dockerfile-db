@@ -1,0 +1,7 @@
+FROM mongo
+
+COPY ./scripts/mongorestore.sh /docker-entrypoint-initdb.d/
+COPY ./scripts/cronjob /etc/cron.d/
+
+RUN apt-get update && apt-get install -y cron
+# run "cron" command manually
