@@ -49,57 +49,43 @@ async def livestream_notify():
       channel = Youtube().get_channel(channel_id)
       base_embed = tools.set_base_embed(channel.title, channel.url, channel.icon)
 
-      coll = MongoDB('youtube', 'video')
+      coll = MongoDB('youtube', channel_id)
       video_id_list = coll.distinct('_id')
-      for video in Youtube().get_playlistItem(channel_id):
+      for video in Youtube().get_playlistItem(channel_id): 
         if video.id not in video_id_list:
           video = Youtube().get_video(video.id)
           if not video.scheduled_time:
-            embed = set_embed(base_embed, title=video.title, description='上傳了新影片！', url=video.url, image=video.thumbnail)
+            embed = tools.set_embed(base_embed, title=video.title, description='上傳了新影片！', url=video.url, image=video.thumbnail)
             await discord_channel.send(embed=embed)
           elif video.status == 'upcoming':
-            embed = set_embed(base_embed, title=video.title, description='建立了新的待機台！', url=video.url, image=video.thumbnail)
-            embed = set_datetime(embed, video, 'scheduled')
+            embed = tools.set_embed(base_embed, title=video.title, description='建立了新的待機台！', url=video.url, image=video.thumbnail)
+            embed = tools.set_datetime(embed, video, 'scheduled')
             await discord_channel.send(embed=embed)
-            MongoDB(name, 'Live').insert({'_id': video._id, 'title': video.title, 'description': video.description, 'status': video.status, 'time': video.scheduled_time, 'collab': False})
-          coll.insert({'_id': video._id, 'title': video.title, 'description': video.description, 'time': video.published_time, 'length': video.length, 'comment': video.comment, 'member': False, 'private': False})
+          coll.insert({'_id': video.id, 'title': video.title, 'time': video.published_time, 'scheduled_time': video.scheduled_time})
 
-      if name in ['Aqua', 'Shion']:
-        for video in get_playlistItem(data['member_id'], max=5):
-          if video._id not in video_id_list:
-            video = get_video(video._id)
-            embed = set_embed(base_embed, title=video.title, description='上傳了新的會員限定影片！', url=video.url, image=video.thumbnail)
-            await discord_channel.send(embed=embed)
-            coll.insert({'_id': video._id, 'title': video.title, 'description': video.description, 'time': video.published_time, 'length': video.length, 'comment': video.comment, 'member': True, 'private': False})
-
-      coll = MongoDB(name, 'Live')
-      for video_item in get_item_list(coll.find(), get_videos(coll.distinct('_id'))):
+      for video_item in tools.get_item_list(coll.find(), Youtube().get_videos(coll.distinct('_id'))):
         video_data, video = video_item
         if not video:
-          embed = set_embed(base_embed, title=video_data['title'], description='預定直播已被取消了！', url=f'https://youtu.be/{video_data["_id"]}')
-          if video_data['collab']: embed = set_author(embed, video_data['author_uid'])
+          embed = tools.set_embed(base_embed, title=video_data['title'], description='預定直播已被取消了！', url=f'https://youtu.be/{video_data["_id"]}')
           await discord_channel.send(embed=embed)
           coll.delete({'_id': video_data['_id']})
 
         else:
           if video.scheduled_time != video_data['time']:
-            embed = set_embed(base_embed, title=video.title, description='直播預定時間變更了！', url=video.url, image=video.thumbnail)
-            embed = set_time_change(embed, video_data['time'], video.scheduled_time)
-            if video_data['collab']: embed = set_author(embed, video_data['author_uid'])
+            embed = tools.set_embed(base_embed, title=video.title, description='直播預定時間變更了！', url=video.url, image=video.thumbnail)
+            embed = tools.set_time_change(embed, video_data['time'], video.scheduled_time)
             await discord_channel.send(embed=embed)
             coll.update({'_id': video._id}, {'$set': {'time': video.scheduled_time}})
 
           if video.status == 'live' and video_data['status'] == 'upcoming':
-            embed = set_embed(base_embed, title=video.title, description='直播串流開始了！', url=video.url, image=video.thumbnail)
-            embed = set_datetime(embed, video, 'start')
-            if video_data['collab']: embed = set_author(embed, video_data['author_uid'])
+            embed = tools.set_embed(base_embed, title=video.title, description='直播串流開始了！', url=video.url, image=video.thumbnail)
+            embed = tools.set_datetime(embed, video, 'start')
             await discord_channel.send(embed=embed)
             coll.update({'_id': video._id}, {'$set': {'status': video.status}})
 
           if video.status == 'none' and video_data['status'] == 'live':
-            embed = set_embed(base_embed, title=video.title, description='直播串流結束了！', url=video.url, image=video.thumbnail)
-            embed = set_datetime(embed, video, 'end')
-            if video_data['collab']: embed = set_author(embed, video_data['author_uid'])
+            embed = tools.set_embed(base_embed, title=video.title, description='直播串流結束了！', url=video.url, image=video.thumbnail)
+            embed = tools.set_datetime(embed, video, 'end')
             await discord_channel.send(embed=embed)
             coll.delete({'_id': video._id})
   except: pass

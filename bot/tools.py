@@ -1,6 +1,8 @@
 import json, os, pymongo, re, requests, time
-from datetime import datetime
+from datetime import datetime, timedelta
 from discord import Embed
+
+TIMEZONE = datetime.now() - datetime.utcnow()
 
 async def wait_for_db():
   while True:
@@ -33,10 +35,19 @@ class MongoDB:
 
   def distinct(self, key: str, filter: dict = {}) -> list:
     return list(self.collection.distinct(key, filter=filter))
+  
+  def drop(self) -> None:
+    self.collection.drop()
+
+def get_item_list(old_list: list, new_list: list) -> list:
+  all_ids = {item['_id'] for item in old_list} | {item._id for item in new_list}
+  item_list = [(next((item for item in old_list if item['_id'] == id), None), next((item for item in new_list if item._id == id), None)) for id in all_ids]
+  return item_list
 
 def add_channel(channel_id: str, channel_title: str, discord_channel_id: int) -> None:
   try:
     MongoDB('youtube', 'channel').insert({'_id': channel_id, 'title': channel_title, 'discord': discord_channel_id})
+    MongoDB('youtube', channel_id).insert(*[{'_id': video.id} for video in Youtube().get_playlistItem(channel_id)])
     return True
   except pymongo.errors.BulkWriteError:
     return False
@@ -46,6 +57,7 @@ def remove_channel(channel_id: str) -> None:
   data = coll.find({'_id': channel_id})
   if data:
     coll.delete({'_id': channel_id})
+    MongoDB('youtube', channel_id).drop()
     return data['title']
   else:
     return False
@@ -54,6 +66,40 @@ def set_base_embed(name: str, url: str, icon: str) -> Embed:
   embed = Embed(color=0xff0000)
   embed.set_footer(text='Youtube', icon_url='https://imgur.com/8Ne5sku.png')
   embed.set_author(name=name, url=url, icon_url=icon)
+  return embed
+
+def set_embed(embed: Embed, **kwargs) -> Embed:
+  embed = embed.copy()
+  for attr, value in kwargs.items():
+    if attr == 'image':embed.set_image(url=value)
+    elif attr == 'thumbnail': embed.set_thumbnail(url=value)
+    else: setattr(embed, attr, value)
+  embed.timestamp = datetime.utcnow()
+  return embed
+
+def set_datetime(embed: Embed, video: object, type: str) -> Embed:
+  match type:
+    case 'scheduled':
+      local_scheduled_time = video.scheduled_time + TIMEZONE
+      embed.add_field(name=f'直播預定日期', value=local_scheduled_time.strftime('%Y年%m月%d日'), inline=True)
+      embed.add_field(name=f'直播預定時間', value=local_scheduled_time.strftime('%H點%M分%S秒'), inline=True)
+    case 'start':
+      local_start_time = video.start_time + TIMEZONE
+      embed.add_field(name=f'直播開始日期', value=local_start_time.strftime('%Y年%m月%d日'), inline=True)
+      embed.add_field(name=f'直播開始時間', value=local_start_time.strftime('%H點%M分%S秒'), inline=True)
+    case 'end':
+      duration = datetime.strptime(str(video.end_time - video.start_time), '%H:%M:%S')
+      local_end_time = video.end_time + TIMEZONE
+      embed.add_field(name=f'直播結束日期', value=local_end_time.strftime('%Y年%m月%d日'), inline=True)
+      embed.add_field(name=f'直播結束時間', value=local_end_time.strftime('%H點%M分%S秒'), inline=True)
+      embed.add_field(name=f'直播總時長', value=duration.strftime('%H時%M分%S秒'), inline=True)
+  return embed
+
+def set_time_change(embed: Embed, original_time: datetime, changed_time: datetime) -> Embed:
+  local_original_time = original_time + TIMEZONE
+  local_changed_time = changed_time + TIMEZONE
+  embed.add_field(name='【變更前】', value=local_original_time.strftime('%Y年%m月%d日\n%H點%M分%S秒'), inline=True)
+  embed.add_field(name='【變更後】', value=local_changed_time.strftime('%Y年%m月%d日\n%H點%M分%S秒'), inline=True)
   return embed
 
 def str_to_date(date_string: str = None) -> datetime:
@@ -70,10 +116,8 @@ class Youtube:
       self.url = f'https://www.youtube.com/@{self.cid}'
 
   class Video:
-    def __init__(self, id: str, title: str, thumbnail: str, **kwargs) -> None:
+    def __init__(self, id: str, **kwargs) -> None:
       self.id = id
-      self.title = title
-      self.thumbnail = thumbnail
       self.url = f'https://youtu.be/{self.id}'
       for attr, value in kwargs.items():
         setattr(self, attr, value)
@@ -98,22 +142,14 @@ class Youtube:
         icon = self.get_thumbnail(data['snippet']['thumbnails'])
       )
       return channel
-    
+
   def get_playlistItem(self, channel_id: str) -> list:
     playlist_id = 'UU' + channel_id[2:]
     path = f'playlistItems?part=snippet&playlistId={playlist_id}&maxResults=3'
     item_list = self.get_youtube_data(path)['items']
-    
-    video_list = []
-    for item in item_list:
-      video = self.Video(
-        id = item['snippet']['resourceId']['videoId'],
-        title = item['snippet']['title'],
-        thumbnail = self.get_thumbnail(item['snippet']['thumbnails'])
-      )
-      video_list.append(video)
+    video_list = [self.Video(id = item['snippet']['resourceId']['videoId']) for item in item_list]
     return video_list
-  
+
   def get_video(self, video_id: str) -> Video:
     path = f'videos?part=contentDetails,liveStreamingDetails,snippet,statistics,status&id={video_id}'
     data = self.get_youtube_data(path)
@@ -129,10 +165,23 @@ class Youtube:
         status = data['snippet']['liveBroadcastContent'],
         published_time = str_to_date(data['snippet']['publishedAt']),
         scheduled_time = str_to_date(live_detail.get('scheduledStartTime')),
-        start_time = str_to_date(live_detail.get('actualStartTime'))
+        start_time = str_to_date(live_detail.get('actualStartTime')),
+        end_time = str_to_date(live_detail.get('actualEndTime'))
       )
       return video
-  
+    
+  def get_videos(self, video_id_list: list) -> list:
+    if not video_id_list: return []
+    else:
+      video_ids = ','.join(video_id_list[0:50])
+      video_list = []
+      path = f'videos?part=contentDetails,liveStreamingDetails,snippet,statistics,status&id={video_ids}'
+      item_list = self.get_youtube_data(path)['items']
+      for item in item_list:
+        video = self.get_video_item(item)
+        video_list.append(video)
+      return video_list
+
   def get_thumbnail(self, data: dict) -> str:
     sizes = ['maxres', 'standard', 'high', 'medium', 'default']
     for size in sizes:
@@ -140,7 +189,7 @@ class Youtube:
         thumbnail = data[size]['url'].split('=s')[0].replace('_live', '')
         return thumbnail
     return 'https://imgur.com/2wAkxNb.png'
-  
+
 if __name__ == '__main__':
   data = Youtube().get_video('e0dfVZjaOq4')
   print(data)
